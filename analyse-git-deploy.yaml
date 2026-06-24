@@ -1,0 +1,268 @@
+# ConfidenceReport:
+#   ReadmeFullyRead: true
+#   ReadmeDeployVerdict: docker compose (official docs https://docs.mem0.ai/open-source/setup)
+#   ExternalDocs: https://docs.mem0.ai/open-source/setup
+#   ReadmeSection: Self-Hosted Setup - Start the stack
+#   PortEvidence: docker-compose.yaml ports 8888:8000 and 3000:3000
+#   HasWebPortal: true (Dashboard on port 3000, API on port 8888)
+#   CustomParametersSource: .env.example -> OPENAI_API_KEY (required, mapped to DashScope/Bailian)
+#   RuntimeProfile: Docker Compose with build context (Python 3.12 API + Node 20 Dashboard + pgvector)
+#   Customization: 使用阿里云百炼(DashScope) OpenAI兼容接口替代原生OpenAI
+RegionId: cn-hongkong
+RepoUrl: https://github.com/mem0ai/mem0
+RepoName: mem0
+ServiceName: mem0
+ServiceDescription: Mem0 是一款智能记忆层平台，为 AI 助手和 Agent 提供持久化记忆能力，支持用户画像、会话上下文记忆与个性化交互，基于 Python 和 Next.js 开发，提供 REST API 和 Web 管理面板。
+BuildType: DockerCompose
+HasWebPortal: true
+BuildCommandContent: |
+  #!/bin/bash
+  set -e
+  APP_NAME="mem0"
+
+  echo "=== Installing prerequisites ==="
+  dnf install -y git
+
+  echo "=== Cloning mem0 repository ==="
+  git clone --depth 1 https://github.com/mem0ai/mem0.git /tmp/mem0-src
+
+  echo "=== Setting up /opt/${APP_NAME} ==="
+  mkdir -p /opt/${APP_NAME}
+
+  # Copy server directory (API + Dockerfile + requirements)
+  cp -r /tmp/mem0-src/server/* /opt/${APP_NAME}/
+  # Copy mem0 source package (needed by dev.Dockerfile build context)
+  cp -r /tmp/mem0-src/mem0 /opt/${APP_NAME}/mem0-pkg/
+  cp /tmp/mem0-src/pyproject.toml /opt/${APP_NAME}/
+  cp /tmp/mem0-src/poetry.lock /opt/${APP_NAME}/ 2>/dev/null || true
+  cp /tmp/mem0-src/README.md /opt/${APP_NAME}/
+
+  cd /opt/${APP_NAME}
+
+  # Create production docker-compose.yaml
+  cat > docker-compose.yaml << 'COMPOSE_EOF'
+  name: mem0
+
+  services:
+    mem0:
+      build:
+        context: .
+        dockerfile: Dockerfile.prod
+      ports:
+        - "8888:8000"
+      env_file:
+        - .env
+      networks:
+        - mem0_network
+      depends_on:
+        postgres:
+          condition: service_healthy
+      environment:
+        - PYTHONDONTWRITEBYTECODE=1
+        - PYTHONUNBUFFERED=1
+        - DASHBOARD_URL=http://localhost:3000
+        - APP_DB_NAME=mem0_app
+        - JWT_SECRET=${JWT_SECRET}
+        - AUTH_DISABLED=false
+        - MEM0_TELEMETRY=false
+        - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      restart: unless-stopped
+
+    postgres:
+      image: pgvector/pgvector:pg17
+      restart: unless-stopped
+      shm_size: "128mb"
+      networks:
+        - mem0_network
+      environment:
+        - POSTGRES_USER=${POSTGRES_USER:-postgres}
+        - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -q -d postgres -U ${POSTGRES_USER:-postgres}"]
+        interval: 5s
+        timeout: 5s
+        retries: 5
+      volumes:
+        - postgres_db:/var/lib/postgresql/data
+        - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+
+    mem0-dashboard:
+      build: ./dashboard
+      ports:
+        - "3000:3000"
+      networks:
+        - mem0_network
+      environment:
+        - NEXT_PUBLIC_API_URL=http://localhost:8888
+        - API_INTERNAL_URL=http://mem0:8000
+        - NEXT_PUBLIC_INSTANCE_NAME=Mem0
+      depends_on:
+        mem0:
+          condition: service_started
+      restart: unless-stopped
+
+  volumes:
+    postgres_db:
+
+  networks:
+    mem0_network:
+      driver: bridge
+  COMPOSE_EOF
+
+  # Create production Dockerfile (uses mem0ai from PyPI, not source)
+  cat > Dockerfile.prod << 'DOCKERFILE_EOF'
+  FROM python:3.12-slim
+
+  WORKDIR /app
+
+  COPY requirements.txt .
+  RUN pip install --no-cache-dir -r requirements.txt
+
+  COPY . .
+  # Remove non-server files that were copied for build context
+  RUN rm -rf mem0-pkg/ dashboard/ Dockerfile.prod
+
+  EXPOSE 8000
+  ENV PYTHONUNBUFFERED=1
+
+  CMD ["sh", "-c", "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000"]
+  DOCKERFILE_EOF
+
+  # Ensure init-db.sh exists and is executable
+  chmod +x init-db.sh
+
+  # Create .env template
+  cat > .env << 'ENV_EOF'
+  OPENAI_API_KEY=placeholder
+  OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+  POSTGRES_HOST=postgres
+  POSTGRES_PORT=5432
+  POSTGRES_DB=postgres
+  POSTGRES_USER=postgres
+  POSTGRES_PASSWORD=placeholder_password
+  POSTGRES_COLLECTION_NAME=memories
+  JWT_SECRET=placeholder_jwt_secret
+  AUTH_DISABLED=false
+  DASHBOARD_URL=http://localhost:3000
+  APP_DB_NAME=mem0_app
+  MEM0_DEFAULT_LLM_MODEL=qwen-plus
+  MEM0_DEFAULT_EMBEDDER_MODEL=text-embedding-v3
+  MEM0_TELEMETRY=false
+  REQUEST_LOG_RETENTION_DAYS=30
+  ENV_EOF
+
+  echo "=== Building Docker images ==="
+  docker compose build --no-cache
+
+  echo "=== Build-time startup validation ==="
+  # Generate temporary secrets for validation
+  TEMP_JWT=$(openssl rand -base64 48)
+  TEMP_PG_PASS=$(openssl rand -base64 16)
+  sed -i "s|placeholder_jwt_secret|${TEMP_JWT}|g" .env
+  sed -i "s|placeholder_password|${TEMP_PG_PASS}|g" .env
+
+  docker compose up -d
+  sleep 30
+
+  # Check if containers are running
+  RUNNING=$(docker compose ps --status running -q | wc -l)
+  if [ "$RUNNING" -lt 2 ]; then
+    echo "ERROR: Expected at least 2 running containers, got ${RUNNING}"
+    docker compose logs
+    docker compose down -v --remove-orphans
+    exit 1
+  fi
+
+  # Check for fatal errors
+  if docker compose logs 2>&1 | grep -qiE "no such image|manifest unknown|pull access denied|exec format error|standard_init_linux|cannot start service|fatal|panic"; then
+    echo "ERROR: Fatal error detected in container logs"
+    docker compose logs
+    docker compose down -v --remove-orphans
+    exit 1
+  fi
+
+  echo "=== Validation passed, cleaning up ==="
+  docker compose down -v --remove-orphans
+
+  # Reset .env placeholders for deployment-time injection
+  cat > .env << 'ENV_EOF'
+  OPENAI_API_KEY=placeholder
+  OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+  POSTGRES_HOST=postgres
+  POSTGRES_PORT=5432
+  POSTGRES_DB=postgres
+  POSTGRES_USER=postgres
+  POSTGRES_PASSWORD=placeholder_password
+  POSTGRES_COLLECTION_NAME=memories
+  JWT_SECRET=placeholder_jwt_secret
+  AUTH_DISABLED=false
+  DASHBOARD_URL=http://localhost:3000
+  APP_DB_NAME=mem0_app
+  MEM0_DEFAULT_LLM_MODEL=qwen-plus
+  MEM0_DEFAULT_EMBEDDER_MODEL=text-embedding-v3
+  MEM0_TELEMETRY=false
+  REQUEST_LOG_RETENTION_DAYS=30
+  ENV_EOF
+
+  # Cleanup source
+  rm -rf /tmp/mem0-src
+  echo "=== Build complete ==="
+StartCommandContent: |
+  #!/bin/bash
+  set -e
+  cd /opt/mem0
+
+  # Generate secrets if still placeholder
+  if grep -q "placeholder_jwt_secret" .env; then
+    JWT_SECRET_VAL=$(openssl rand -base64 48)
+    sed -i "s|placeholder_jwt_secret|${JWT_SECRET_VAL}|g" .env
+  fi
+
+  if grep -q "placeholder_password" .env; then
+    PG_PASS_VAL=$(openssl rand -base64 16)
+    sed -i "s|placeholder_password|${PG_PASS_VAL}|g" .env
+  fi
+
+  # Inject user-provided DashScope API Key
+  sed -i "s|OPENAI_API_KEY=.*|OPENAI_API_KEY=${DashScopeApiKey}|g" .env
+
+  # Start the stack
+  docker compose up -d
+
+  # Wait for services to be healthy
+  echo "Waiting for services to start..."
+  sleep 20
+
+  # Verify API is responding
+  for i in $(seq 1 10); do
+    if curl -fsS http://127.0.0.1:8888/docs >/dev/null 2>&1; then
+      echo "Mem0 API is ready!"
+      break
+    fi
+    sleep 5
+  done
+
+  # Verify Dashboard is responding
+  for i in $(seq 1 10); do
+    if curl -fsS http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
+      echo "Mem0 Dashboard is ready!"
+      break
+    fi
+    sleep 5
+  done
+SecurityGroupPorts:
+  - [3000, tcp]
+  - [8888, tcp]
+ServicePorts:
+  mem0:
+    - [3000, tcp]
+    - [8888, tcp]
+CustomParameters:
+  - Name: DashScopeApiKey
+    Type: String
+    Label: 百炼API Key
+    NoEcho: true
+ServiceOutputs:
+  - Name: QuickStartGuide
+    Label: 使用说明
+    Value: 打开Dashboard访问地址(3000端口)，首次访问将进入Setup Wizard创建管理员账号，完成后即可使用Mem0的记忆管理功能。API端口为8888。

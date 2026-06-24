@@ -1,0 +1,441 @@
+ROSTemplateFormatVersion: '2015-09-01'
+Locals:
+  CurTime:
+    Type: Eval
+    Value:
+      Fn::FormatTime:
+        - '%Y%m%d-%H%M%S'
+        - Asia/Shanghai
+Conditions:
+  CreateVpcConditions:
+    Fn::Equals:
+      - NewVPC
+      - Ref: VpcOption
+Parameters:
+  VpcOption:
+    Type: String
+    AllowedValues:
+      - NewVPC
+      - ExistingVPC
+    AssociationPropertyMetadata:
+      ValueLabelMapping:
+        NewVPC:
+          zh-cn: 新建专有网络
+          en: New VPC
+        ExistingVPC:
+          zh-cn: 已有专有网络
+          en: Existing VPC
+    Label:
+      en: Select Existing or New VPC
+      zh-cn: 选择已有/新建的专有网络
+    Required: true
+    Default: NewVPC
+  VpcCidrBlock:
+    Type: String
+    Label:
+      en: VPC CIDR IPv4 Block
+      zh-cn: 专有网络IPv4网段
+    Description:
+      zh-cn: VPC的ip地址段范围，<br>您可以使用以下的ip地址段或其子网:<br><font color='green'>[10.0.0.0/8]</font><br><font color='green'>[172.16.0.0/12]</font><br><font color='green'>[192.168.0.0/16]</font>
+      en: 'The ip address range of the VPC in the CidrBlock form; <br>You can use the following ip address ranges and their subnets: <br><font color=''green''>[10.0.0.0/8]</font><br><font color=''green''>[172.16.0.0/12]</font><br><font color=''green''>[192.168.0.0/16]</font>'
+    Default: 192.168.0.0/16
+    Required:
+      Fn::Equals:
+        - NewVPC
+        - ${VpcOption}
+    AssociationProperty: ALIYUN::VPC::VPC::CidrBlock
+    AssociationPropertyMetadata:
+      Visible:
+        Condition:
+          Fn::Equals:
+            - NewVPC
+            - ${VpcOption}
+  VSwitchCidrBlock:
+    Type: String
+    Label:
+      en: VSwitch CIDR Block
+      zh-cn: 交换机子网网段
+    Description:
+      zh-cn: 必须属于VPC的子网段。
+      en: Must belong to the subnet segment of VPC.
+    Default: 192.168.1.0/24
+    Required:
+      Fn::Equals:
+        - NewVPC
+        - ${VpcOption}
+    AssociationProperty: ALIYUN::VPC::VSwitch::CidrBlock
+    AssociationPropertyMetadata:
+      VpcCidrBlock: VpcCidrBlock
+      Visible:
+        Condition:
+          Fn::Equals:
+            - NewVPC
+            - ${VpcOption}
+  PayType:
+    Type: String
+    Label:
+      en: ECS Instance Charge Type
+      zh-cn: 付费类型
+    Default: PostPaid
+    AllowedValues:
+      - PostPaid
+      - PrePaid
+    AssociationProperty: ChargeType
+    AssociationPropertyMetadata:
+      LocaleKey: InstanceChargeType
+  PayPeriodUnit:
+    Type: String
+    Label:
+      en: Pay Period Unit
+      zh-cn: 购买资源时长周期
+    Default: Month
+    AllowedValues:
+      - Month
+      - Year
+    AssociationProperty: PayPeriodUnit
+    AssociationPropertyMetadata:
+      Visible:
+        Condition:
+          Fn::Not:
+            Fn::Equals:
+              - ${PayType}
+              - PostPaid
+  PayPeriod:
+    Type: Number
+    Label:
+      en: Period
+      zh-cn: 购买资源时长
+    Default: 1
+    AllowedValues:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      - 8
+      - 9
+    AssociationProperty: PayPeriod
+    AssociationPropertyMetadata:
+      Visible:
+        Condition:
+          Fn::Not:
+            Fn::Equals:
+              - ${PayType}
+              - PostPaid
+  EcsInstanceType:
+    Type: String
+    Label:
+      en: Instance Type
+      zh-cn: 实例类型
+    AssociationProperty: ALIYUN::ECS::Instance::InstanceType
+    AssociationPropertyMetadata:
+      InstanceChargeType: ${PayType}
+      Constraints:
+        InstanceTypeFamily:
+          - ecs.u1
+          - ecs.e
+  InstancePassword:
+    NoEcho: true
+    Type: String
+    Description:
+      en: Server login password, Length 8-30, must contain three(Capital letters, lowercase letters, numbers, ()`~!@#$%^&*_-+=|{}[]:;'<>,.?/ Special symbol in)
+      zh-cn: 服务器登录密码,长度8-30，必须包含三项（大写字母、小写字母、数字、 ()`~!@#$%^&*_-+=|{}[]:;'<>,.?/ 中的特殊符号）
+    AllowedPattern: '^[a-zA-Z0-9-\(\)\`\~\!\@\#\$\%\^\&\*\_\-\+\=\|\{\}\[\]\:\;\<\>\,\.\?\/]*$'
+    Label:
+      en: Instance Password
+      zh-cn: 实例密码
+    ConstraintDescription:
+      en: Length 8-30, must contain three(Capital letters, lowercase letters, numbers, ()`~!@#$%^&*_-+=|{}[]:;'<>,.?/ Special symbol in)
+      zh-cn: 长度8-30，必须包含三项（大写字母、小写字母、数字、 ()`~!@#$%^&*_-+=|{}[]:;'<>,.?/ 中的特殊符号）
+    MinLength: 8
+    MaxLength: 30
+    AssociationProperty: ALIYUN::ECS::Instance::Password
+  ZoneId:
+    Type: String
+    Label:
+      en: Zone ID
+      zh-cn: 可用区ID
+    AssociationProperty: ALIYUN::ECS::Instance::ZoneId
+    AssociationPropertyMetadata:
+      DefaultValueStrategy: random
+      InstanceChargeType: ${PayType}
+      SystemDiskCategory: cloud_essd
+      InstanceType: ${EcsInstanceType}
+  VpcId:
+    Type: String
+    Label:
+      en: VPC ID
+      zh-cn: 专有网络VPC实例ID
+    AssociationProperty: 'ALIYUN::ECS::VPC::VPCId'
+    Required:
+      Fn::Equals:
+        - ExistingVPC
+        - ${VpcOption}
+    Default: ''
+    AssociationPropertyMetadata:
+      AutoSelectFirst: true
+      Visible:
+        Condition:
+          Fn::Equals:
+            - ExistingVPC
+            - ${VpcOption}
+  VSwitchId:
+    Type: String
+    Label:
+      en: VSwitch ID
+      zh-cn: 交换机实例ID
+    Default: ''
+    AssociationProperty: 'ALIYUN::ECS::VSwitch::VSwitchId'
+    Required:
+      Fn::Equals:
+        - ExistingVPC
+        - ${VpcOption}
+    AssociationPropertyMetadata:
+      AutoSelectFirst: true
+      VpcId: ${VpcId}
+      ZoneId: ${ZoneId}
+      Visible:
+        Condition:
+          Fn::Equals:
+            - ExistingVPC
+            - ${VpcOption}
+  DashScopeApiKey:
+    Type: String
+    Label: 百炼API Key
+    NoEcho: True
+Resources:
+  # 新建vpc
+  EcsVpc:
+    Type: ALIYUN::ECS::VPC
+    Condition: CreateVpcConditions
+    Properties:
+      VpcName:
+        Ref: ALIYUN::StackName
+      CidrBlock:
+        Ref: VpcCidrBlock
+  # 新建vswitch
+  EcsVSwitch:
+    Condition: CreateVpcConditions
+    Type: ALIYUN::ECS::VSwitch
+    Properties:
+      VSwitchName:
+        Ref: ALIYUN::StackName
+      VpcId:
+        Ref: EcsVpc
+      ZoneId:
+        Ref: ZoneId
+      CidrBlock:
+        Ref: VSwitchCidrBlock
+  SecurityGroup:
+    Type: ALIYUN::ECS::SecurityGroup
+    Properties:
+      SecurityGroupName:
+        Ref: ALIYUN::StackName
+      VpcId:
+        Fn::If:
+          - CreateVpcConditions
+          - Ref: EcsVpc
+          - Ref: VpcId
+      SecurityGroupIngress:
+        - PortRange: 3000/3000
+          Priority: 1
+          SourceCidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          NicType: internet
+        - PortRange: 8888/8888
+          Priority: 1
+          SourceCidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          NicType: internet
+  InstanceGroup:
+    Type: ALIYUN::ECS::InstanceGroup
+    Properties:
+      # 付费类型
+      InstanceChargeType:
+        Ref: PayType
+      PeriodUnit:
+        Ref: PayPeriodUnit
+      Period:
+        Ref: PayPeriod
+      VpcId:
+        Fn::If:
+          - CreateVpcConditions
+          - Ref: EcsVpc
+          - Ref: VpcId
+      VSwitchId:
+        'Fn::If':
+          - CreateVpcConditions
+          - Ref: EcsVSwitch
+          - Ref: VSwitchId
+      ZoneId:
+        Ref: ZoneId
+      SecurityGroupId:
+        Ref: SecurityGroup
+      ImageId: ecs_image
+      Password:
+        Ref: InstancePassword
+      InstanceType:
+        Ref: EcsInstanceType
+      SystemDiskCategory: cloud_essd
+      SystemDiskSize: 200
+      # 分配公网IP，Dashboard需要浏览器直连API
+      InternetMaxBandwidthOut: 5
+      IoOptimized: optimized
+      MaxAmount: 1
+  RunInstallCommand:
+    Type: ALIYUN::ECS::RunCommand
+    Properties:
+      InstanceIds:
+        Fn::GetAtt:
+        - InstanceGroup
+        - InstanceIds
+      Type: RunShellScript
+      Sync: true
+      Timeout: 3600
+      CommandContent:
+        Fn::Sub:
+          - |
+            #!/bin/bash
+            set -e
+            cd /opt/mem0
+
+            # Generate secrets if still placeholder
+            if grep -q "placeholder_jwt_secret" .env; then
+              JWT_SECRET_VAL=$(openssl rand -base64 48)
+              sed -i "s|placeholder_jwt_secret|${!JWT_SECRET_VAL}|g" .env
+            fi
+
+            if grep -q "placeholder_password" .env; then
+              PG_PASS_VAL=$(openssl rand -base64 16)
+              sed -i "s|placeholder_password|${!PG_PASS_VAL}|g" .env
+            fi
+
+            # Inject user-provided DashScope API Key
+            sed -i "s|OPENAI_API_KEY=.*|OPENAI_API_KEY=${DashScopeApiKey}|g" .env
+
+            # Get ECS public IP from ROS (passed via Fn::Sub, more reliable than metadata service)
+            PUBLIC_IP="${PublicIp}"
+            echo "Detected public IP: ${!PUBLIC_IP}"
+            echo "NEXT_PUBLIC_API_URL=http://${!PUBLIC_IP}:8888" >> .env
+            export NEXT_PUBLIC_API_URL="http://${!PUBLIC_IP}:8888"
+
+            # Fix DASHBOARD_URL for CORS (API must allow requests from the real dashboard origin)
+            sed -i "s|DASHBOARD_URL=.*|DASHBOARD_URL=http://${!PUBLIC_IP}:3000|g" .env
+            # Replace DASHBOARD_URL in mem0 API section (for CORS)
+            sed -i "s|DASHBOARD_URL=http://localhost:3000|DASHBOARD_URL=http://${!PUBLIC_IP}:3000|g" docker-compose.yaml
+            # Ensure DASHBOARD_URL is in mem0-dashboard section (for cookie secure flag)
+            # NEXT_PUBLIC_INSTANCE_NAME only exists in dashboard section, so insert after it
+            if ! grep -A2 "NEXT_PUBLIC_INSTANCE_NAME" docker-compose.yaml | grep -q "DASHBOARD_URL"; then
+              sed -i "/NEXT_PUBLIC_INSTANCE_NAME/a\\      - DASHBOARD_URL=http://${!PUBLIC_IP}:3000" docker-compose.yaml
+            fi
+
+            # Start the stack
+            docker compose up -d
+
+            # Wait for services to be healthy
+            echo "Waiting for services to start..."
+            sleep 30
+
+            # Verify API is responding
+            for i in $(seq 1 10); do
+              if curl -fsS http://127.0.0.1:8888/docs >/dev/null 2>&1; then
+                echo "Mem0 API is ready!"
+                break
+              fi
+              sleep 5
+            done
+
+            # Verify Dashboard is responding
+            for i in $(seq 1 10); do
+              if curl -fsS http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
+                echo "Mem0 Dashboard is ready!"
+                break
+              fi
+              sleep 5
+            done
+
+            # Fix NEXT_PUBLIC_API_URL in dashboard (double insurance)
+            # The dashboard entrypoint.sh should handle this via env var substitution,
+            # but also directly replace any hardcoded localhost:8888 in built JS files
+            DASHBOARD_CID=$(docker compose ps -q mem0-dashboard)
+            if [ -n "${!DASHBOARD_CID}" ]; then
+              echo "Patching dashboard JS with public IP: ${!PUBLIC_IP}"
+              docker exec ${!DASHBOARD_CID} sh -c "find /app/.next -type f -name '*.js' | xargs sed -i 's|http://localhost:8888|http://${!PUBLIC_IP}:8888|g' 2>/dev/null" || true
+              docker exec ${!DASHBOARD_CID} sh -c "find /app/.next -type f -name '*.js' | xargs sed -i 's|NEXT_PUBLIC_API_URL|http://${!PUBLIC_IP}:8888|g' 2>/dev/null" || true
+              docker compose restart mem0-dashboard
+              echo "Dashboard restarted with updated API URL"
+              sleep 10
+            fi
+
+          - RegionId:
+              Ref: ALIYUN::Region
+            CurTime:
+              Ref: CurTime
+            PublicIp:
+              Fn::Select:
+                - 0
+                - Fn::GetAtt:
+                    - InstanceGroup
+                    - PublicIps
+Outputs:
+  mem0_3000_url:
+    Description:
+      en: mem0 Dashboard URL (port 3000).
+      zh-cn: mem0 Dashboard 访问地址（端口 3000）。
+    Value:
+      Fn::Sub:
+        - http://${ServerAddress}:3000
+        - ServerAddress:
+            Fn::Select:
+              - 0
+              - Fn::GetAtt:
+                  - InstanceGroup
+                  - PublicIps
+  mem0_8888_url:
+    Description:
+      en: mem0 API URL (port 8888).
+      zh-cn: mem0 API 访问地址（端口 8888）。
+    Value:
+      Fn::Sub:
+        - http://${ServerAddress}:8888
+        - ServerAddress:
+            Fn::Select:
+              - 0
+              - Fn::GetAtt:
+                  - InstanceGroup
+                  - PublicIps
+  QuickStartGuide:
+    Description:
+      zh-cn: 使用说明
+      en: 使用说明
+    Value: "打开Dashboard访问地址(3000端口)，首次访问将进入Setup Wizard创建管理员账号，完成后即可使用Mem0的记忆管理功能。API端口为8888。"
+Metadata:
+  ALIYUN::ROS::Interface:
+    ParameterGroups:
+      - Parameters:
+          - PayType
+          - PayPeriodUnit
+          - PayPeriod
+        Label:
+          default: 付费类型配置
+      - Parameters:
+          - EcsInstanceType
+          - InstancePassword
+        Label:
+          default: 资源配置
+      - Parameters:
+          - DashScopeApiKey
+        Label:
+          en: Software Configuration
+          zh-cn: 软件配置
+      - Parameters:
+          - ZoneId
+          - VpcOption
+          - VpcId
+          - VSwitchId
+          - VpcCidrBlock
+          - VSwitchCidrBlock
+        Label:
+          default: 可用区配置
