@@ -206,6 +206,17 @@ Parameters:
     Label: 百炼API Key
     NoEcho: True
 Resources:
+  WaitConditionHandle:
+    Type: ALIYUN::ROS::WaitConditionHandle
+    Properties: {}
+  WaitCondition:
+    Type: ALIYUN::ROS::WaitCondition
+    Properties:
+      Count: 1
+      Handle:
+        Ref: WaitConditionHandle
+      Timeout: 1800
+    DependsOn: RunInstallCommand
   # 新建vpc
   EcsVpc:
     Type: ALIYUN::ECS::VPC
@@ -308,12 +319,16 @@ Resources:
             fi
 
             if grep -q "placeholder_password" .env; then
-              PG_PASS_VAL=$(openssl rand -base64 16)
+              PG_PASS_VAL=$(openssl rand -hex 16)
               sed -i "s|placeholder_password|${!PG_PASS_VAL}|g" .env
             fi
 
             # Inject user-provided DashScope API Key
             sed -i "s|OPENAI_API_KEY=.*|OPENAI_API_KEY=${DashScopeApiKey}|g" .env
+
+            # Generate ADMIN_API_KEY for programmatic access
+            ADMIN_KEY="m0-$(openssl rand -hex 24)"
+            echo "ADMIN_API_KEY=${!ADMIN_KEY}" >> .env
 
             # Get ECS public IP from ROS (passed via Fn::Sub, more reliable than metadata service)
             PUBLIC_IP="${PublicIp}"
@@ -339,9 +354,11 @@ Resources:
             sleep 30
 
             # Verify API is responding
+            API_READY=false
             for i in $(seq 1 10); do
               if curl -fsS http://127.0.0.1:8888/docs >/dev/null 2>&1; then
                 echo "Mem0 API is ready!"
+                API_READY=true
                 break
               fi
               sleep 5
@@ -355,6 +372,49 @@ Resources:
               fi
               sleep 5
             done
+
+            # Auto-register admin user for Dashboard login
+            ADMIN_EMAIL="admin@mem0-server.com"
+            ADMIN_PASSWORD=$(openssl rand -hex 12)
+            MEM0_API_KEY=""
+            if [ "${!API_READY}" = "true" ]; then
+              echo "=== Auto-registering admin user ==="
+              REGISTER_RESP=$(curl -s -X POST http://127.0.0.1:8888/auth/register \
+                -H "Content-Type: application/json" \
+                -d "{\"name\": \"Admin\", \"email\": \"${!ADMIN_EMAIL}\", \"password\": \"${!ADMIN_PASSWORD}\"}" 2>&1) || true
+              echo "Register response: ${!REGISTER_RESP}"
+
+              # Login to get JWT
+              LOGIN_RESP=$(curl -s -X POST http://127.0.0.1:8888/auth/login \
+                -H "Content-Type: application/json" \
+                -d "{\"email\": \"${!ADMIN_EMAIL}\", \"password\": \"${!ADMIN_PASSWORD}\"}" 2>&1) || true
+              echo "Login response: ${!LOGIN_RESP}"
+
+              # Extract access_token
+              ACCESS_TOKEN=$(echo "${!LOGIN_RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null) || true
+
+              if [ -n "${!ACCESS_TOKEN}" ]; then
+                echo "=== Generating Mem0 API Key ==="
+                KEY_RESP=$(curl -s -X POST http://127.0.0.1:8888/api-keys \
+                  -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer ${!ACCESS_TOKEN}" \
+                  -d "{\"label\": \"default\"}" 2>&1) || true
+                echo "API Key response: ${!KEY_RESP}"
+                MEM0_API_KEY=$(echo "${!KEY_RESP}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('key','') or d.get('api_key',''))" 2>/dev/null) || true
+              fi
+            fi
+
+            # Build output data for WaitCondition (base64-encoded JSON for reliable parsing)
+            if [ -n "${!MEM0_API_KEY}" ]; then
+              OUTPUT_JSON="{\"api_key\":\"${!MEM0_API_KEY}\",\"email\":\"${!ADMIN_EMAIL}\",\"password\":\"${!ADMIN_PASSWORD}\",\"admin_key\":\"${!ADMIN_KEY}\"}"
+            else
+              OUTPUT_JSON="{\"api_key\":\"\",\"email\":\"\",\"password\":\"\",\"admin_key\":\"${!ADMIN_KEY}\"}"
+            fi
+            OUTPUT_B64=$(echo -n "${!OUTPUT_JSON}" | base64 -w 0)
+
+            # Signal WaitCondition with base64-encoded credentials
+            ${CurlCli} -d "{\"Id\": \"credentials\", \"Data\": \"${!OUTPUT_B64}\", \"status\": \"SUCCESS\"}"
+            echo "=== Credentials signaled to WaitCondition ==="
 
             # Fix NEXT_PUBLIC_API_URL in dashboard (double insurance)
             # The dashboard entrypoint.sh should handle this via env var substitution,
@@ -373,6 +433,10 @@ Resources:
               Ref: ALIYUN::Region
             CurTime:
               Ref: CurTime
+            CurlCli:
+              Fn::GetAtt:
+                - WaitConditionHandle
+                - CurlCli
             PublicIp:
               Fn::Select:
                 - 0
@@ -406,11 +470,63 @@ Outputs:
               - Fn::GetAtt:
                   - InstanceGroup
                   - PublicIps
+  Mem0ApiKey:
+    Description:
+      zh-cn: Mem0 API Key（用于 X-API-Key 请求头调用 API）
+      en: Mem0 API Key (use in X-API-Key header)
+    Value:
+      Fn::GetJsonValue:
+        - api_key
+        - Fn::Base64Decode:
+            Fn::GetJsonValue:
+              - credentials
+              - Fn::GetAtt:
+                  - WaitCondition
+                  - Data
+  DashboardEmail:
+    Description:
+      zh-cn: Dashboard 登录邮箱
+      en: Dashboard Login Email
+    Value:
+      Fn::GetJsonValue:
+        - email
+        - Fn::Base64Decode:
+            Fn::GetJsonValue:
+              - credentials
+              - Fn::GetAtt:
+                  - WaitCondition
+                  - Data
+  DashboardPassword:
+    Description:
+      zh-cn: Dashboard 登录密码
+      en: Dashboard Login Password
+    Value:
+      Fn::GetJsonValue:
+        - password
+        - Fn::Base64Decode:
+            Fn::GetJsonValue:
+              - credentials
+              - Fn::GetAtt:
+                  - WaitCondition
+                  - Data
+  AdminApiKey:
+    Description:
+      zh-cn: 备用 Admin API Key（用于 X-API-Key 请求头）
+      en: Backup Admin API Key (for X-API-Key header)
+    Value:
+      Fn::GetJsonValue:
+        - admin_key
+        - Fn::Base64Decode:
+            Fn::GetJsonValue:
+              - credentials
+              - Fn::GetAtt:
+                  - WaitCondition
+                  - Data
   QuickStartGuide:
     Description:
       zh-cn: 使用说明
       en: 使用说明
-    Value: "打开Dashboard访问地址(3000端口)，首次访问将进入Setup Wizard创建管理员账号，完成后即可使用Mem0的记忆管理功能。API端口为8888。"
+    Value: "使用Mem0 API Key通过X-API-Key请求头调用API(8888端口)，或使用管理员邮箱密码登录Dashboard(3000端口)管理记忆。"
 Metadata:
   ALIYUN::ROS::Interface:
     ParameterGroups:

@@ -146,7 +146,7 @@ BuildCommandContent: |
   DASHBOARD_URL=http://localhost:3000
   APP_DB_NAME=mem0_app
   MEM0_DEFAULT_LLM_MODEL=qwen-plus
-  MEM0_DEFAULT_EMBEDDER_MODEL=text-embedding-v3
+  MEM0_DEFAULT_EMBEDDER_MODEL=text-embedding-v2
   MEM0_TELEMETRY=false
   REQUEST_LOG_RETENTION_DAYS=30
   ENV_EOF
@@ -199,7 +199,7 @@ BuildCommandContent: |
   DASHBOARD_URL=http://localhost:3000
   APP_DB_NAME=mem0_app
   MEM0_DEFAULT_LLM_MODEL=qwen-plus
-  MEM0_DEFAULT_EMBEDDER_MODEL=text-embedding-v3
+  MEM0_DEFAULT_EMBEDDER_MODEL=text-embedding-v2
   MEM0_TELEMETRY=false
   REQUEST_LOG_RETENTION_DAYS=30
   ENV_EOF
@@ -226,6 +226,10 @@ StartCommandContent: |
   # Inject user-provided DashScope API Key
   sed -i "s|OPENAI_API_KEY=.*|OPENAI_API_KEY=${DashScopeApiKey}|g" .env
 
+  # Generate ADMIN_API_KEY for programmatic access
+  ADMIN_KEY="m0-$(openssl rand -hex 24)"
+  echo "ADMIN_API_KEY=${ADMIN_KEY}" >> .env
+
   # Start the stack
   docker compose up -d
 
@@ -234,9 +238,11 @@ StartCommandContent: |
   sleep 20
 
   # Verify API is responding
+  API_READY=false
   for i in $(seq 1 10); do
     if curl -fsS http://127.0.0.1:8888/docs >/dev/null 2>&1; then
       echo "Mem0 API is ready!"
+      API_READY=true
       break
     fi
     sleep 5
@@ -250,6 +256,41 @@ StartCommandContent: |
     fi
     sleep 5
   done
+
+  # Auto-register admin user for Dashboard login
+  ADMIN_EMAIL="admin@mem0-server.com"
+  ADMIN_PASSWORD=$(openssl rand -base64 12)
+  if [ "${API_READY}" = "true" ]; then
+    echo "=== Auto-registering admin user ==="
+    curl -s -X POST http://127.0.0.1:8888/auth/register \
+      -H "Content-Type: application/json" \
+      -d "{\"name\": \"Admin\", \"email\": \"${ADMIN_EMAIL}\", \"password\": \"${ADMIN_PASSWORD}\"}" || true
+
+    # Login and generate API key
+    LOGIN_RESP=$(curl -s -X POST http://127.0.0.1:8888/auth/login \
+      -H "Content-Type: application/json" \
+      -d "{\"email\": \"${ADMIN_EMAIL}\", \"password\": \"${ADMIN_PASSWORD}\"}" 2>&1) || true
+
+    ACCESS_TOKEN=$(echo "${LOGIN_RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null) || true
+
+    if [ -n "${ACCESS_TOKEN}" ]; then
+      KEY_RESP=$(curl -s -X POST http://127.0.0.1:8888/api-keys \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+        -d "{\"label\": \"default\"}" 2>&1) || true
+      MEM0_API_KEY=$(echo "${KEY_RESP}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('key','') or d.get('api_key',''))" 2>/dev/null) || true
+    fi
+  fi
+
+  echo "========================================"
+  echo "Mem0 Deployment Complete!"
+  echo "Admin API Key (X-API-Key): ${ADMIN_KEY}"
+  if [ -n "${MEM0_API_KEY}" ]; then
+    echo "Mem0 API Key: ${MEM0_API_KEY}"
+    echo "Dashboard Email: ${ADMIN_EMAIL}"
+    echo "Dashboard Password: ${ADMIN_PASSWORD}"
+  fi
+  echo "========================================"
 SecurityGroupPorts:
   - [3000, tcp]
   - [8888, tcp]
@@ -263,6 +304,18 @@ CustomParameters:
     Label: 百炼API Key
     NoEcho: true
 ServiceOutputs:
+  - Name: Mem0ApiKey
+    Label: Mem0 API Key
+    Value: 自动生成的API Key，用于X-API-Key请求头调用API
+  - Name: DashboardEmail
+    Label: Dashboard登录邮箱
+    Value: 自动注册的管理员邮箱
+  - Name: DashboardPassword
+    Label: Dashboard登录密码
+    Value: 自动生成的管理员密码
+  - Name: AdminApiKey
+    Label: 备用Admin Key
+    Value: 备用管理密钥，用于X-API-Key请求头
   - Name: QuickStartGuide
     Label: 使用说明
-    Value: 打开Dashboard访问地址(3000端口)，首次访问将进入Setup Wizard创建管理员账号，完成后即可使用Mem0的记忆管理功能。API端口为8888。
+    Value: 使用Mem0 API Key通过X-API-Key请求头调用API(8888端口)，或使用管理员邮箱密码登录Dashboard(3000端口)管理记忆。

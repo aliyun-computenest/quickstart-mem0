@@ -223,7 +223,7 @@ Artifact:
         DASHBOARD_URL=http://localhost:3000
         APP_DB_NAME=mem0_app
         MEM0_DEFAULT_LLM_MODEL=qwen-plus
-        MEM0_DEFAULT_EMBEDDER_MODEL=text-embedding-v3
+        MEM0_DEFAULT_EMBEDDER_MODEL=text-embedding-v2
         MEM0_TELEMETRY=false
         REQUEST_LOG_RETENTION_DAYS=30
         ENV_EOF
@@ -276,7 +276,7 @@ Artifact:
         DASHBOARD_URL=http://localhost:3000
         APP_DB_NAME=mem0_app
         MEM0_DEFAULT_LLM_MODEL=qwen-plus
-        MEM0_DEFAULT_EMBEDDER_MODEL=text-embedding-v3
+        MEM0_DEFAULT_EMBEDDER_MODEL=text-embedding-v2
         MEM0_TELEMETRY=false
         REQUEST_LOG_RETENTION_DAYS=30
         ENV_EOF
